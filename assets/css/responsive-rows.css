@@ -1,0 +1,31 @@
+/*
+ * Responsive Loop Grid Rows - minimal styling.
+ *
+ * Intentionally light-touch: this plugin does not redesign the Loop Item
+ * template, so it only needs a couple of small helpers.
+ */
+
+/* Briefly dim a grid while its AJAX correction request is in flight, so a
+   content swap never looks like a jarring flash. This never hides items
+   permanently and never fires unless the visitor's real breakpoint differs
+   from the server-rendered fallback device. */
+.rlg-responsive-grid.rlg-correcting {
+	opacity: 0.55;
+	transition: opacity 0.15s ease-in-out;
+	pointer-events: none;
+}
+
+/* Editor panel helper box shown beneath the Rows control. */
+.rlg-calculated-info .rlg-calculated-box {
+	background: #f7f7f7;
+	border: 1px solid #e0e0e0;
+	border-radius: 3px;
+	padding: 8px 10px;
+	font-size: 12px;
+	line-height: 1.8;
+	color: #495157;
+}
+
+.rlg-calculated-info .rlg-calculated-row b {
+	color: #1a1a1a;
+}
