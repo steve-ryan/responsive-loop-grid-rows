@@ -4,11 +4,12 @@ Tags: elementor, elementor pro, loop grid, woocommerce, pagination
 Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.1
-Stable tag: 1.0.1
+Requires Plugins: elementor
+Stable tag: 1.0.2
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Control Elementor Pro Loop Grid pagination by ROWS instead of Items Per Page, with true server-side responsive pagination that stays correct under page/CDN caching.
+Set Elementor Pro Loop Grid rows per breakpoint. Items per page is calculated for you, with cache-safe server-side pagination.
 
 == Description ==
 
@@ -70,7 +71,7 @@ For each breakpoint, `posts_per_page = columns x rows`, where:
 
 == Pagination behaviour ==
 
-Because the plugin only ever changes `posts_per_page` on the real query - via Elementor's own `elementor/query/{$query_id}` action, which fires with the real `WP_Query` object just before it runs - WordPress itself recomputes `found_posts`, `max_num_pages`, and all offsets correctly. This means:
+Because the plugin only ever changes `posts_per_page` on the real query - via Elementor's `elementor/query/query_args` filter and, when a custom Query ID is set, its `elementor/query/{$query_id}` action, which fires with the real `WP_Query` object just before it runs - WordPress itself recomputes `found_posts`, `max_num_pages`, and all offsets correctly. This means:
 
 * **Numbers / Prev-Next pagination**: total page count and each page's products are correct per breakpoint.
 * **Load More**: each click requests the next batch at the size appropriate for the visitor's breakpoint (see "Caching strategy" for how the visitor's breakpoint is determined on Load More's own AJAX requests).
@@ -93,7 +94,9 @@ This is the part most "responsive pagination" implementations get wrong, so here
 
 In short: the cached HTML is always generic and safe; the corrected, device-specific content is always fetched out-of-band. Visitors on the configured fallback device (typically the majority, if you leave it on Desktop) get the correct content immediately, with no extra request at all.
 
-A short-lived, non-sensitive cookie (`rlg_device`) records the visitor's resolved device purely so that Elementor's own native "Load More" AJAX pagination - which this plugin does not intercept - also gets the right `posts_per_page` on page 2 onward. This cookie is only ever read on `admin-ajax.php` requests (never cached), never on the cached page render itself, so it cannot leak one visitor's device into another visitor's cached page.
+A short-lived, non-sensitive cookie (`rlg_device`, 24 hours) records the visitor's device, but only when it differs from the fallback device. Elementor's own native pagination (Numbers / Load More, which this plugin does not intercept) requests page 2 onward as an ordinary request, and the server reads this cookie **only on those paginated requests** (URLs carrying Elementor's `e-page-` argument) so that page 2+ uses the same items-per-page as the corrected page 1 - otherwise products would be skipped or repeated. A plain page load never reads the cookie, so the cacheable page render can never vary per visitor. When a paginated response does depend on the cookie, the plugin sends no-cache headers (and sets `DONOTCACHEPAGE`) so a page cache or CDN cannot store it and serve it to someone else.
+
+The AJAX endpoint deliberately uses no nonce: it is public and read-only (it returns markup already visible on the page), and a nonce baked into a cached page would expire long before the cached copy does, silently disabling the correction. It only ever renders published, publicly viewable content (or content the current user can edit), and only for Loop Grids that have Responsive Rows enabled.
 
 If you'd rather trade perfect per-visitor accuracy for zero extra requests, set **AJAX correction** to "Off" in the settings page - every visitor will then see the fallback device's item count.
 
@@ -122,6 +125,8 @@ When enabled: safe, non-sensitive data (widget ID, resolved breakpoint, columns,
 * The Elementor editor's live preview canvas always simulates the Desktop breakpoint (see "Editor mode" above).
 * A visitor who resizes their browser across a breakpoint while already deep in pagination will see the new breakpoint's item count apply starting from a fresh page load or pagination click, not instantly mid-scroll (see "Pagination behaviour" above).
 * Filtering plugins that bypass Elementor's own query/render pipeline entirely are not affected by Responsive Rows (see "Filters compatibility").
+* Loop Grids whose Query source is **Current Query** (archive/category templates) always use the fallback device's item count. Their query depends on the page's main query, which cannot be reproduced inside `admin-ajax.php`, so they are intentionally not corrected (showing the wrong products would be worse than showing the fallback count).
+* The device model is Desktop / Tablet / Mobile. If you enable Elementor's additional breakpoints (Laptop, Tablet Extra, Mobile Extra, Widescreen), Responsive Rows only distinguishes the Mobile and Tablet breakpoints; the other breakpoints use the nearest of those three.
 * This plugin relies on `Elementor\Core\Base\Document::render_element()`, a documented-in-practice but not formally versioned Elementor Pro/Core method used internally for single-widget AJAX re-rendering. The plugin checks for its existence at runtime and fails gracefully (falling back to the site-wide fallback device for all visitors, with a debug log entry) if a future Elementor update removes or renames it.
 
 == How to disable the feature ==
@@ -148,7 +153,21 @@ No. Responsive Rows is off by default on every Loop Grid until you explicitly en
 
 This version targets the Loop Grid widget specifically (widget name `loop-grid`), matching the brief this plugin was built against. The calculation logic in `RLG\Responsive_Query` is generic and could be pointed at other Query-Control-based widgets in a future version.
 
+== Privacy ==
+
+The plugin sets one functional cookie, `rlg_device` (value: `mobile`, `tablet` or `desktop`; 24 hours), solely so that paginated Loop Grid requests return the right number of items for the visitor's screen size. It contains no personal data and is not used for tracking. Suggested wording is added to Settings -> Privacy -> Policy Guide. No data is sent to any third party.
+
 == Changelog ==
+
+= 1.0.2 =
+* Fix: the AJAX correction returned an empty response because `Document::render_element()` returns its markup instead of printing it; the returned value is now used (printed output is kept only as a fallback).
+* Fix: the per-page nonce was embedded in cached pages and expired after 12-24 hours, silently disabling the correction on cached sites. The endpoint is public and read-only, so the nonce has been removed; access is enforced with capability/visibility checks instead.
+* Fix: the `rlg_device` cookie was written by the script but never read by PHP, so Load More / Numbers pages 2+ used the fallback item count on tablet/mobile. It is now honoured on paginated requests only, with no-cache headers, and only for grids that are also corrected on page 1.
+* Fix: the row count is now applied through Elementor's query-args filter as well as the per-Query-ID action, so Responsive Rows no longer depends on a custom Query ID being set, and several grids sharing one Query ID no longer override each other.
+* Fix: access check on the AJAX endpoint failed open if a document method was missing; it now fails closed (published/public, published Elementor template, or `edit_post`; password-protected content refused).
+* Fix: grids using "Current Query" are no longer swapped via AJAX (the page context cannot be reproduced there); the singular post context is now restored for grids inside Theme Builder templates.
+* Fix: the correction script no longer runs inside the Elementor editor/preview, and re-initialises Elementor handlers correctly (jQuery-wrapped, including nested widgets) after swapping markup.
+* Standards: front-end data is passed with `wp_add_inline_script()` instead of `wp_localize_script()`; removed needless `flush_rewrite_rules()` calls; removed double escaping of Settings API titles and Elementor render attributes; environment checks no longer translate strings before `init`; boot moved to `plugins_loaded` priority 20; added `Requires Plugins`, Elementor Pro version check, Settings link on the Plugins screen, privacy policy content, and `get_sites()` in `uninstall.php`; license header uses the SPDX identifier.
 
 = 1.0.1 =
 * Fix: fatal `TypeError` in `Elementor\Controls_Stack::sanitize_settings()` that could occur on every admin page load. It was caused by the Responsive Rows helper text control reading `get_settings_for_display()` during Elementor's *control registration* phase, before any widget settings exist (this path is hit whenever Elementor Pro builds its internal blank widget instance for editor localisation, not just when actually editing a Loop Grid). The "Calculated items per page" box is now built as a static placeholder at registration time and filled in entirely client-side by the existing editor.js live-update logic once a real widget instance is open in the panel - no functional change to what you see once editing an actual Loop Grid.
