@@ -77,7 +77,7 @@ class Elementor_Controls {
 				'condition'      => array(
 					'rlg_enable' => 'yes',
 				),
-				'description'    => esc_html__( 'Number of product rows to show at this breakpoint. Items Per Page = this value x the Columns setting above, for the same breakpoint.', 'responsive-loop-grid-rows' ),
+				'description'    => esc_html__( 'Number of rows to show at this breakpoint. Items Per Page = this value x the Columns setting above, for the same breakpoint.', 'responsive-loop-grid-rows' ),
 			)
 		);
 
@@ -127,9 +127,10 @@ class Elementor_Controls {
 
 		foreach ( $rows as $key => $label ) {
 			$html .= sprintf(
-				'<span class="rlg-calculated-row" data-rlg-device="%1$s">%2$s: <b data-rlg-value>&#8211;</b> ' . esc_html__( 'items/page', 'responsive-loop-grid-rows' ) . '</span><br />',
+				'<span class="rlg-calculated-row" data-rlg-device="%1$s">%2$s: <b data-rlg-value>&#8211;</b> %3$s</span><br />',
 				esc_attr( $key ),
-				esc_html( $label )
+				esc_html( $label ),
+				esc_html__( 'items/page', 'responsive-loop-grid-rows' )
 			);
 		}
 
