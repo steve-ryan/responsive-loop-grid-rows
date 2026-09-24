@@ -20,19 +20,19 @@ if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
 delete_option( 'rlg_default_device' );
 delete_option( 'rlg_ajax_correction_mode' );
 
-// Multisite: also clean up per-site options if this was network-activated
-// on a multisite install.
+// Multisite: also clean up per-site options on every site of the network.
 if ( is_multisite() ) {
-	global $wpdb;
+	$rlg_site_ids = get_sites(
+		array(
+			'fields' => 'ids',
+			'number' => 0,
+		)
+	);
 
-	$blog_ids = $wpdb->get_col( "SELECT blog_id FROM {$wpdb->blogs}" ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
-
-	if ( $blog_ids ) {
-		foreach ( $blog_ids as $blog_id ) {
-			switch_to_blog( (int) $blog_id );
-			delete_option( 'rlg_default_device' );
-			delete_option( 'rlg_ajax_correction_mode' );
-			restore_current_blog();
-		}
+	foreach ( $rlg_site_ids as $rlg_site_id ) {
+		switch_to_blog( (int) $rlg_site_id );
+		delete_option( 'rlg_default_device' );
+		delete_option( 'rlg_ajax_correction_mode' );
+		restore_current_blog();
 	}
 }
