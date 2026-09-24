@@ -29,6 +29,28 @@ class Settings {
 	public static function init(): void {
 		add_action( 'admin_menu', array( __CLASS__, 'add_menu' ) );
 		add_action( 'admin_init', array( __CLASS__, 'register_settings' ) );
+		add_filter( 'plugin_action_links_' . RLG_PLUGIN_BASENAME, array( __CLASS__, 'add_action_links' ) );
+	}
+
+	/**
+	 * Add a "Settings" shortcut to this plugin's row on the Plugins screen.
+	 *
+	 * @param array<int|string, string> $links Existing action links.
+	 * @return array<int|string, string>
+	 */
+	public static function add_action_links( $links ): array {
+		$links = is_array( $links ) ? $links : array();
+
+		array_unshift(
+			$links,
+			sprintf(
+				'<a href="%s">%s</a>',
+				esc_url( admin_url( 'options-general.php?page=' . self::PAGE_SLUG ) ),
+				esc_html__( 'Settings', 'responsive-loop-grid-rows' )
+			)
+		);
+
+		return $links;
 	}
 
 	/**
@@ -36,8 +58,8 @@ class Settings {
 	 */
 	public static function add_menu(): void {
 		add_options_page(
-			esc_html__( 'Responsive Loop Grid Rows', 'responsive-loop-grid-rows' ),
-			esc_html__( 'Loop Grid Rows', 'responsive-loop-grid-rows' ),
+			__( 'Responsive Loop Grid Rows', 'responsive-loop-grid-rows' ),
+			__( 'Loop Grid Rows', 'responsive-loop-grid-rows' ),
 			'manage_options',
 			self::PAGE_SLUG,
 			array( __CLASS__, 'render_page' )
@@ -70,22 +92,23 @@ class Settings {
 
 		add_settings_section(
 			'rlg_main_section',
-			esc_html__( 'General Settings', 'responsive-loop-grid-rows' ),
+			__( 'General Settings', 'responsive-loop-grid-rows' ),
 			'__return_false',
 			self::PAGE_SLUG
 		);
 
 		add_settings_field(
 			'rlg_default_device',
-			esc_html__( 'Fallback / cached-page device', 'responsive-loop-grid-rows' ),
+			__( 'Fallback / cached-page device', 'responsive-loop-grid-rows' ),
 			array( __CLASS__, 'render_default_device_field' ),
 			self::PAGE_SLUG,
-			'rlg_main_section'
+			'rlg_main_section',
+			array( 'label_for' => 'rlg_default_device' )
 		);
 
 		add_settings_field(
 			'rlg_ajax_correction_mode',
-			esc_html__( 'AJAX correction', 'responsive-loop-grid-rows' ),
+			__( 'AJAX correction', 'responsive-loop-grid-rows' ),
 			array( __CLASS__, 'render_correction_mode_field' ),
 			self::PAGE_SLUG,
 			'rlg_main_section'
@@ -110,7 +133,7 @@ class Settings {
 	public static function render_default_device_field(): void {
 		$current = get_option( 'rlg_default_device', 'desktop' );
 		?>
-		<select name="rlg_default_device">
+		<select id="rlg_default_device" name="rlg_default_device">
 			<option value="desktop" <?php selected( $current, 'desktop' ); ?>><?php esc_html_e( 'Desktop', 'responsive-loop-grid-rows' ); ?></option>
 			<option value="tablet" <?php selected( $current, 'tablet' ); ?>><?php esc_html_e( 'Tablet', 'responsive-loop-grid-rows' ); ?></option>
 			<option value="mobile" <?php selected( $current, 'mobile' ); ?>><?php esc_html_e( 'Mobile', 'responsive-loop-grid-rows' ); ?></option>
