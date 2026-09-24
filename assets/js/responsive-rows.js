@@ -19,10 +19,11 @@
 
 	var RLG = window.RLG_Data || null;
 
-	if ( ! RLG || ! RLG.ajaxUrl || ! RLG.nonce ) {
+	if ( ! RLG || ! RLG.ajaxUrl ) {
 		return;
 	}
 
+	var COOKIE_NAME = 'rlg_device';
 	var hasFetch = typeof window.fetch === 'function';
 	var hasMatchMedia = typeof window.matchMedia === 'function';
 
@@ -68,20 +69,31 @@
 	}
 
 	/**
-	 * Persist the resolved device in a short-lived, non-sensitive cookie.
+	 * Keep the short-lived, non-sensitive `rlg_device` cookie in step with
+	 * the visitor's real device.
 	 *
-	 * This is purely a UX/consistency optimisation: it lets Elementor's OWN
-	 * native "Load More" AJAX pagination (which our script does not, and
-	 * should not, intercept) pick up the right posts_per_page on subsequent
-	 * pages, because that request also reaches the server as a normal,
-	 * never-cached admin-ajax.php call, and PHP can read the cookie there.
-	 * It is never used to vary the cacheable, server-rendered HTML itself.
+	 * Why it exists: Elementor's own "Load More" / Numbers pagination (which
+	 * this script does not, and should not, intercept) requests page 2+ as a
+	 * normal server request. The server reads this cookie - on those
+	 * paginated requests only - so page 2+ uses the same items-per-page as
+	 * the corrected page 1 (otherwise products would be skipped/repeated).
 	 *
-	 * @param {string} device
+	 * The cookie is only stored when it is needed, i.e. when the visitor's
+	 * device differs from the site's fallback device; when they match the
+	 * server's default is already right, so any stale cookie is removed. It
+	 * is never used to vary a plain (cacheable) page load.
+	 *
+	 * @param {string} device The visitor's resolved device.
 	 */
-	function persistDeviceCookie( device ) {
+	function syncDeviceCookie( device ) {
 		try {
-			document.cookie = 'rlg_device=' + device + '; path=/; max-age=86400; SameSite=Lax';
+			var secure = window.location && window.location.protocol === 'https:' ? '; Secure' : '';
+
+			if ( device === RLG.fallbackDevice ) {
+				document.cookie = COOKIE_NAME + '=; path=/; max-age=0; SameSite=Lax' + secure;
+			} else {
+				document.cookie = COOKIE_NAME + '=' + device + '; path=/; max-age=86400; SameSite=Lax' + secure;
+			}
 		} catch ( e ) {
 			// Cookies blocked - ignore, this is only an optimisation.
 		}
@@ -97,6 +109,7 @@
 	function correct( el, device ) {
 		var widgetId = el.getAttribute( 'data-rlg-widget-id' );
 		var documentId = el.getAttribute( 'data-rlg-document-id' );
+		var postId = el.getAttribute( 'data-rlg-post-id' );
 
 		if ( ! widgetId || ! documentId ) {
 			return;
@@ -106,11 +119,13 @@
 
 		var body = new URLSearchParams();
 		body.set( 'action', 'rlg_render_grid' );
-		body.set( 'nonce', RLG.nonce );
 		body.set( 'widget_id', widgetId );
 		body.set( 'document_id', documentId );
 		body.set( 'device', device );
 		body.set( 'query_string', window.location.search || '' );
+		if ( postId ) {
+			body.set( 'post_id', postId );
+		}
 
 		fetch( RLG.ajaxUrl, {
 			method: 'POST',
@@ -123,9 +138,10 @@
 			} )
 			.then( function ( json ) {
 				if ( json && json.success && json.data && typeof json.data.html === 'string' && json.data.html.length ) {
-					replaceElement( el, json.data.html );
-					persistDeviceCookie( device );
-					log( 'corrected widget', widgetId, 'to device', device );
+					if ( replaceElement( el, json.data.html ) ) {
+						syncDeviceCookie( device );
+						log( 'corrected widget', widgetId, 'to device', device );
+					}
 				} else {
 					log( 'correction returned no usable html for widget', widgetId, json );
 				}
@@ -133,11 +149,51 @@
 			.catch( function ( err ) {
 				log( 'correction request failed for widget', widgetId, err );
 			} )
-			.finally( function () {
+			.then( function () {
+				// Runs on success and failure alike. (Promise#finally is
+				// avoided so very old browsers behave the same way.)
 				if ( el && el.classList ) {
 					el.classList.remove( 'rlg-correcting' );
 				}
 			} );
+	}
+
+	/**
+	 * Re-run Elementor's front-end handlers on freshly inserted markup, so
+	 * the widget (and any widgets inside its loop items) behave exactly as
+	 * they do on a normal page load.
+	 *
+	 * `runReadyTrigger` expects a jQuery-wrapped element and initialises
+	 * only that one element, so it is called for the wrapper and for every
+	 * Elementor element nested inside it.
+	 *
+	 * @param {HTMLElement} newEl
+	 */
+	function reinitElementor( newEl ) {
+		var $ = window.jQuery;
+
+		if ( ! $ || ! window.elementorFrontend || ! window.elementorFrontend.elementsHandler ) {
+			return;
+		}
+
+		var handler = window.elementorFrontend.elementsHandler;
+
+		if ( typeof handler.runReadyTrigger !== 'function' ) {
+			return;
+		}
+
+		try {
+			handler.runReadyTrigger( $( newEl ) );
+
+			$( newEl )
+				.find( '[data-element_type]' )
+				.each( function () {
+					handler.runReadyTrigger( $( this ) );
+				} );
+		} catch ( e ) {
+			// Best-effort re-init of Elementor's own front-end handlers;
+			// safe to ignore if Elementor's internal API differs.
+		}
 	}
 
 	/**
@@ -148,6 +204,7 @@
 	 *
 	 * @param {HTMLElement} el
 	 * @param {string} html
+	 * @return {boolean} Whether the swap happened.
 	 */
 	function replaceElement( el, html ) {
 		var template = document.createElement( 'template' );
@@ -157,20 +214,13 @@
 		if ( ! newEl || ! el.parentNode ) {
 			// Could not parse a usable element - leave the existing,
 			// fallback-device content in place rather than breaking the page.
-			return;
+			return false;
 		}
 
 		el.parentNode.replaceChild( newEl, el );
+		reinitElementor( newEl );
 
-		if ( window.elementorFrontend && window.elementorFrontend.elementsHandler ) {
-			try {
-				window.elementorFrontend.elementsHandler.runReadyTrigger( newEl );
-			} catch ( e ) {
-				// Best-effort re-init of Elementor's own front-end handlers
-				// (e.g. equal-height, lazy load) on the swapped-in markup;
-				// safe to ignore if Elementor's internal API differs.
-			}
-		}
+		return true;
 	}
 
 	function init() {
@@ -191,12 +241,19 @@
 
 		var device = detectDevice();
 
-		grids.forEach( function ( el ) {
+		Array.prototype.forEach.call( grids, function ( el ) {
+			// Grids the server marked as not correctable (e.g. "Current
+			// Query" archives) carry no document id; leave them entirely
+			// alone, including the cookie, so they stay self-consistent.
+			if ( ! el.getAttribute( 'data-rlg-document-id' ) ) {
+				return;
+			}
+
 			var serverDevice = el.getAttribute( 'data-rlg-device' );
 
 			if ( serverDevice === device ) {
-				// Server already rendered the right thing - nothing to do.
-				persistDeviceCookie( device );
+				// Server already rendered the right thing - nothing to fetch.
+				syncDeviceCookie( device );
 				return;
 			}
 
