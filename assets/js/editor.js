@@ -1,20 +1,21 @@
 /**
  * Responsive Loop Grid Rows - editor helper.
  *
- * Elementor's panel re-renders controls as Backbone views, and there is no
- * small, version-stable public API for "recalculate this bit of raw HTML
- * whenever these other controls change". Rather than hook into Elementor's
- * internal Backbone views (fragile across versions), this takes a
- * deliberately simple, best-effort approach: it watches the actual <input>
- * elements for the controls we care about (by their `data-setting`
- * attribute, which Elementor does consistently render) while a Loop Grid
- * widget's panel is open, and recalculates the numbers itself in JS.
+ * Does two small jobs while a Loop Grid is open in the Elementor panel:
  *
- * If Elementor ever changes this DOM structure, this script simply stops
- * finding the inputs and silently does nothing further - the "Calculated"
- * text will still show the value from the last save/panel-open, it just
- * won't live-update. This is the "sensible editor fallback" referenced in
- * the README.
+ * 1. Keeps the "Calculated items per page" box up to date as Columns / Rows
+ *    change, for every breakpoint the site has enabled.
+ * 2. Hides the widget's own "Items Per Page" field while Responsive Rows is on
+ *    (the PHP side already does this through the control's condition; this is
+ *    the fallback for an Elementor Pro version where that control moved).
+ *
+ * Values are read from the widget's settings model, which is stable across
+ * Elementor versions and already includes defaults. If the model is not
+ * reachable, the script falls back to reading the panel inputs by their
+ * `data-setting` attribute. If neither works it does nothing, and the box
+ * simply keeps its last value.
+ *
+ * `window.RLG_Editor` is provided by the plugin: { order, chains, labels }.
  */
 ( function ( $ ) {
 	'use strict';
@@ -23,99 +24,136 @@
 		return;
 	}
 
-	var WATCHED_SETTINGS = [
-		'columns', 'columns_tablet', 'columns_mobile',
-		'rlg_rows', 'rlg_rows_tablet', 'rlg_rows_mobile'
-	];
+	var CFG = window.RLG_Editor || {
+		order: [ 'desktop', 'tablet', 'mobile' ],
+		chains: {
+			desktop: [ 'desktop' ],
+			tablet: [ 'tablet', 'desktop' ],
+			mobile: [ 'mobile', 'tablet', 'desktop' ]
+		},
+		labels: { desktop: 'Desktop', tablet: 'Tablet', mobile: 'Mobile' }
+	};
 
-	/**
-	 * Read the current value of a control's input inside a given panel
-	 * root, by its data-setting attribute. Elementor renders responsive
-	 * controls' inactive breakpoints as hidden siblings, so we look at all
-	 * matches and take the first with a non-empty value.
-	 *
-	 * @param {jQuery} root
-	 * @param {string} setting
-	 * @return {number}
-	 */
-	function readSetting( root, setting ) {
-		var $inputs = root.find( '[data-setting="' + setting + '"]' );
-		var value = null;
+	var DEFAULTS = { columns: 3, rlg_rows: 2 };
+	var boundSettings = null;
 
-		$inputs.each( function () {
-			var v = $( this ).val();
-			if ( v !== '' && v !== undefined && v !== null ) {
-				value = v;
-				return false;
-			}
-		} );
+	function settingKey( base, device ) {
+		return device === 'desktop' ? base : base + '_' + device;
+	}
 
+	function toPositiveInt( value ) {
 		var parsed = parseInt( value, 10 );
 		return isNaN( parsed ) || parsed < 1 ? null : parsed;
 	}
 
 	/**
-	 * Recalculate and write the three "items/page" numbers into the
-	 * Responsive Rows helper box.
+	 * Build a reader for a control value, from the settings model when
+	 * available, otherwise from the panel's inputs.
 	 *
-	 * @param {jQuery} root Panel content root for the currently open widget.
+	 * @param {Object|null} settings Backbone settings model of the open widget.
+	 * @return {function(string): *}
 	 */
-	function recalculate( root ) {
-		var $box = root.find( '[data-rlg-calculated-box]' );
+	function makeReader( settings ) {
+		if ( settings && typeof settings.get === 'function' ) {
+			return function ( key ) {
+				return settings.get( key );
+			};
+		}
+
+		var $panel = $( '#elementor-panel-content-wrapper' );
+
+		return function ( key ) {
+			var value = null;
+
+			$panel.find( '[data-setting="' + key + '"]' ).each( function () {
+				var v = $( this ).val();
+				if ( v !== '' && v !== undefined && v !== null ) {
+					value = v;
+					return false;
+				}
+			} );
+
+			return value;
+		};
+	}
+
+	/**
+	 * Effective value for a device, walking the same inheritance chain the
+	 * server uses.
+	 */
+	function resolve( read, base, device ) {
+		var chain = CFG.chains[ device ] || [ device, 'desktop' ];
+
+		for ( var i = 0; i < chain.length; i++ ) {
+			var value = toPositiveInt( read( settingKey( base, chain[ i ] ) ) );
+			if ( value ) {
+				return value;
+			}
+		}
+
+		return DEFAULTS[ base ];
+	}
+
+	function recalculate( read ) {
+		var $box = $( '#elementor-panel-content-wrapper' ).find( '[data-rlg-calculated-box]' );
+
 		if ( ! $box.length ) {
 			return;
 		}
 
-		var columnsDesktop = readSetting( root, 'columns' ) || 3;
-		var columnsTablet = readSetting( root, 'columns_tablet' ) || columnsDesktop;
-		var columnsMobile = readSetting( root, 'columns_mobile' ) || columnsTablet;
+		CFG.order.forEach( function ( device ) {
+			var items = resolve( read, 'columns', device ) * resolve( read, 'rlg_rows', device );
 
-		var rowsDesktop = readSetting( root, 'rlg_rows' ) || 2;
-		var rowsTablet = readSetting( root, 'rlg_rows_tablet' ) || rowsDesktop;
-		var rowsMobile = readSetting( root, 'rlg_rows_mobile' ) || rowsTablet;
-
-		var values = {
-			desktop: columnsDesktop * rowsDesktop,
-			tablet: columnsTablet * rowsTablet,
-			mobile: columnsMobile * rowsMobile
-		};
-
-		Object.keys( values ).forEach( function ( device ) {
-			$box.find( '[data-rlg-device="' + device + '"] [data-rlg-value]' ).text( values[ device ] );
+			$box.find( '[data-rlg-device="' + device + '"] [data-rlg-value]' ).text( items );
 		} );
 	}
 
 	/**
-	 * Attach change/input listeners, scoped to the currently open panel, so
-	 * we never leak listeners across widget selections.
+	 * Hide or show the native Items Per Page control to match the switch.
 	 */
-	function bindPanel() {
-		var $panel = $( '#elementor-panel-content-wrapper' );
-		if ( ! $panel.length ) {
-			return;
+	function syncItemsPerPage( read ) {
+		var enabled = read( 'rlg_enable' ) === 'yes';
+
+		$( '#elementor-panel-content-wrapper .elementor-control-posts_per_page' ).toggle( ! enabled );
+	}
+
+	function refresh( settings ) {
+		var read = makeReader( settings );
+
+		recalculate( read );
+		syncItemsPerPage( read );
+	}
+
+	/**
+	 * Bind to one widget's settings model. Unbinds from the previous one
+	 * first so listeners never pile up across widget selections.
+	 */
+	function bind( settings ) {
+		if ( boundSettings && typeof boundSettings.off === 'function' ) {
+			boundSettings.off( 'change', onChange );
 		}
 
-		$panel.off( 'input.rlg change.rlg' );
+		boundSettings = settings && typeof settings.on === 'function' ? settings : null;
 
-		var selector = WATCHED_SETTINGS
-			.map( function ( setting ) {
-				return '[data-setting="' + setting + '"]';
-			} )
-			.join( ',' );
+		if ( boundSettings ) {
+			boundSettings.on( 'change', onChange );
+		}
 
-		$panel.on( 'input.rlg change.rlg', selector, function () {
-			recalculate( $panel );
-		} );
+		refresh( boundSettings );
+	}
 
-		// Run once immediately in case the panel opened with the Responsive
-		// Rows section already expanded.
-		recalculate( $panel );
+	function onChange() {
+		refresh( boundSettings );
 	}
 
 	try {
-		elementor.hooks.addAction( 'panel/open_editor/widget/loop-grid', function () {
+		elementor.hooks.addAction( 'panel/open_editor/widget/loop-grid', function ( panel, model ) {
+			var settings = model && typeof model.get === 'function' ? model.get( 'settings' ) : null;
+
 			// Give Elementor a tick to finish rendering the panel's controls.
-			setTimeout( bindPanel, 50 );
+			setTimeout( function () {
+				bind( settings );
+			}, 50 );
 		} );
 	} catch ( e ) {
 		// Elementor's hooks API is unavailable/changed - fail silently.

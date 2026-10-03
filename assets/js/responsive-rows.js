@@ -9,6 +9,9 @@
  *
  * No build step, no dependencies. Degrades silently if fetch/matchMedia are
  * unavailable (extremely old browsers keep the fallback-device content).
+ *
+ * It also re-checks when the window is resized or the device is rotated, so a
+ * grid follows the visitor across breakpoints without a page reload.
  */
 ( function () {
 	'use strict';
@@ -28,36 +31,70 @@
 	var hasMatchMedia = typeof window.matchMedia === 'function';
 
 	/**
+	 * Normalise the breakpoint list the server passes in. The current format
+	 * is an array of { name, value, direction }, ordered max-width smallest
+	 * to largest, then min-width. A page cached by an older version of the
+	 * plugin carries { mobile: 767, tablet: 1024 } instead; both work.
+	 *
+	 * @return {Array<{name: string, value: number, direction: string}>}
+	 */
+	function getBreakpoints() {
+		var raw = RLG.breakpoints;
+
+		if ( Array.isArray( raw ) ) {
+			return raw;
+		}
+
+		var legacy = raw || { mobile: 767, tablet: 1024 };
+
+		return [
+			{ name: 'mobile', value: legacy.mobile || 767, direction: 'max' },
+			{ name: 'tablet', value: legacy.tablet || 1024, direction: 'max' }
+		];
+	}
+
+	/**
 	 * Work out the visitor's current device using Elementor's own
-	 * configured breakpoint values (never hard-coded 767/1024).
+	 * configured breakpoint values (never hard-coded 767/1024) and every
+	 * breakpoint the site has enabled (Mobile Extra, Tablet Extra, Laptop,
+	 * Widescreen).
 	 *
-	 * Elementor breakpoints are expressed as max-width values: a viewport
-	 * at or below the "mobile" value is mobile, at or below "tablet" is
-	 * tablet, and anything above that is desktop.
+	 * Max-width breakpoints are checked from smallest to largest and the
+	 * first one that matches wins; a min-width breakpoint (Widescreen) wins
+	 * when the viewport is at least that wide; otherwise it is desktop.
 	 *
-	 * @return {string} one of "mobile", "tablet", "desktop".
+	 * @return {string} A device name such as "mobile", "tablet" or "desktop".
 	 */
 	function detectDevice() {
-		var bp = RLG.breakpoints || { mobile: 767, tablet: 1024 };
-
-		if ( hasMatchMedia ) {
-			if ( window.matchMedia( '(max-width: ' + bp.mobile + 'px)' ).matches ) {
-				return 'mobile';
-			}
-			if ( window.matchMedia( '(max-width: ' + bp.tablet + 'px)' ).matches ) {
-				return 'tablet';
-			}
-			return 'desktop';
-		}
-
-		// matchMedia unavailable - fall back to viewport width comparison.
+		var list = getBreakpoints();
 		var width = window.innerWidth || document.documentElement.clientWidth || 0;
-		if ( width <= bp.mobile ) {
-			return 'mobile';
+		var i;
+		var bp;
+		var matches;
+
+		for ( i = 0; i < list.length; i++ ) {
+			bp = list[ i ];
+			if ( bp.direction === 'min' ) {
+				continue;
+			}
+			matches = hasMatchMedia ? window.matchMedia( '(max-width: ' + bp.value + 'px)' ).matches : width <= bp.value;
+			if ( matches ) {
+				return bp.name;
+			}
 		}
-		if ( width <= bp.tablet ) {
-			return 'tablet';
+
+		// Largest min-width breakpoint that matches wins.
+		for ( i = list.length - 1; i >= 0; i-- ) {
+			bp = list[ i ];
+			if ( bp.direction !== 'min' ) {
+				continue;
+			}
+			matches = hasMatchMedia ? window.matchMedia( '(min-width: ' + bp.value + 'px)' ).matches : width >= bp.value;
+			if ( matches ) {
+				return bp.name;
+			}
 		}
+
 		return 'desktop';
 	}
 
@@ -117,6 +154,8 @@
 
 		el.classList.add( 'rlg-correcting' );
 
+		var succeeded = false;
+
 		var body = new URLSearchParams();
 		body.set( 'action', 'rlg_render_grid' );
 		body.set( 'widget_id', widgetId );
@@ -139,6 +178,7 @@
 			.then( function ( json ) {
 				if ( json && json.success && json.data && typeof json.data.html === 'string' && json.data.html.length ) {
 					if ( replaceElement( el, json.data.html ) ) {
+						succeeded = true;
 						syncDeviceCookie( device );
 						log( 'corrected widget', widgetId, 'to device', device );
 					}
@@ -154,6 +194,18 @@
 				// avoided so very old browsers behave the same way.)
 				if ( el && el.classList ) {
 					el.classList.remove( 'rlg-correcting' );
+
+					// Remember a failure for this device so a resize
+					// check does not retry the same broken request.
+					if ( ! succeeded ) {
+						el.setAttribute( 'data-rlg-failed', device );
+					}
+				}
+
+				// The visitor may have crossed another breakpoint while
+				// this request was in flight.
+				if ( succeeded ) {
+					refreshAll();
 				}
 			} );
 	}
@@ -223,16 +275,14 @@
 		return true;
 	}
 
-	function init() {
-		if ( ! hasFetch ) {
-			log( 'fetch unavailable - skipping AJAX correction, fallback-device content will remain' );
-			return;
-		}
-
-		if ( RLG.correctionMode === 'off' ) {
-			return;
-		}
-
+	/**
+	 * Bring every correctable grid in line with the visitor's current
+	 * device. Safe to call repeatedly: a grid that already shows the right
+	 * device, is mid-request, or already failed for this device is skipped.
+	 *
+	 * @param {boolean} isInitial True for the first run on page load.
+	 */
+	function refreshAll( isInitial ) {
 		var grids = document.querySelectorAll( '.rlg-responsive-grid' );
 
 		if ( ! grids.length ) {
@@ -257,8 +307,53 @@
 				return;
 			}
 
+			if ( el.classList.contains( 'rlg-correcting' ) || el.getAttribute( 'data-rlg-failed' ) === device ) {
+				return;
+			}
+
 			correct( el, device );
 		} );
+	}
+
+	var resizeTimer = null;
+
+	/**
+	 * Re-check after the window is resized or the device rotated. Debounced,
+	 * and skipped while the visitor is deep in pagination (an `e-page-`
+	 * argument in the URL): "page 2" means a different set of items at a
+	 * different items-per-page, so swapping content under them would jump
+	 * them around. A fresh page load or pagination click is authoritative.
+	 */
+	function onViewportChange() {
+		window.clearTimeout( resizeTimer );
+
+		resizeTimer = window.setTimeout( function () {
+			if ( /[?&]e-page-/.test( window.location.search || '' ) ) {
+				return;
+			}
+
+			refreshAll( false );
+		}, 250 );
+	}
+
+	function init() {
+		if ( ! hasFetch ) {
+			log( 'fetch unavailable - skipping AJAX correction, fallback-device content will remain' );
+			return;
+		}
+
+		if ( RLG.correctionMode === 'off' ) {
+			return;
+		}
+
+		if ( ! document.querySelector( '.rlg-responsive-grid' ) ) {
+			return;
+		}
+
+		refreshAll( true );
+
+		window.addEventListener( 'resize', onViewportChange );
+		window.addEventListener( 'orientationchange', onViewportChange );
 	}
 
 	if ( document.readyState === 'loading' ) {

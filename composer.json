@@ -1,0 +1,19 @@
+{
+	"name": "steve/responsive-loop-grid-rows",
+	"description": "Responsive Rows for Elementor Pro's Loop Grid widget.",
+	"type": "wordpress-plugin",
+	"license": "GPL-2.0-or-later",
+	"require": {
+		"php": ">=8.1"
+	},
+	"require-dev": {
+		"phpunit/phpunit": "^9.6 || ^10.5"
+	},
+	"scripts": {
+		"test": "phpunit",
+		"test:plain": "php tests/run.php"
+	},
+	"config": {
+		"sort-packages": true
+	}
+}
