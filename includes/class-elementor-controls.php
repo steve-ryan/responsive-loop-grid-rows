@@ -42,6 +42,8 @@ class Elementor_Controls {
 			return;
 		}
 
+		self::hide_native_items_per_page( $element );
+
 		$element->start_controls_section(
 			'rlg_section_responsive_rows',
 			array(
@@ -97,6 +99,37 @@ class Elementor_Controls {
 	}
 
 	/**
+	 * Hide the widget's own "Items Per Page" field while Responsive Rows is
+	 * on, because its value is ignored then. Done by adding a condition to the
+	 * existing control; any condition Elementor already set is kept. If the
+	 * control is not found (a future Elementor Pro renamed it) nothing happens
+	 * and assets/js/editor.js hides the field instead.
+	 *
+	 * @param \Elementor\Widget_Base $element The Loop Grid widget instance.
+	 */
+	private static function hide_native_items_per_page( $element ): void {
+		if ( ! method_exists( $element, 'get_controls' ) || ! method_exists( $element, 'update_control' ) ) {
+			return;
+		}
+
+		try {
+			$control = $element->get_controls( 'posts_per_page' );
+
+			if ( ! is_array( $control ) ) {
+				return;
+			}
+
+			$condition = isset( $control['condition'] ) && is_array( $control['condition'] ) ? $control['condition'] : array();
+
+			$condition['rlg_enable!'] = 'yes';
+
+			$element->update_control( 'posts_per_page', array( 'condition' => $condition ) );
+		} catch ( \Throwable $e ) {
+			Debug::log( 'hide_items_per_page_error', array( 'message' => $e->getMessage() ) );
+		}
+	}
+
+	/**
 	 * Build the static placeholder markup for the "Calculated items per
 	 * page" helper box shown beneath the Rows control in the editor panel.
 	 *
@@ -116,11 +149,10 @@ class Elementor_Controls {
 	 * @return string Escaped HTML.
 	 */
 	public static function render_calculated_html_placeholder(): string {
-		$rows = array(
-			'desktop' => esc_html__( 'Desktop', 'responsive-loop-grid-rows' ),
-			'tablet'  => esc_html__( 'Tablet', 'responsive-loop-grid-rows' ),
-			'mobile'  => esc_html__( 'Mobile', 'responsive-loop-grid-rows' ),
-		);
+		$rows = array();
+		foreach ( Responsive_Query::get_devices_display_order() as $device ) {
+			$rows[ $device ] = Responsive_Query::get_device_label( $device );
+		}
 
 		$html  = '<div class="rlg-calculated-box" data-rlg-calculated-box="1">';
 		$html .= '<strong>' . esc_html__( 'Calculated items per page:', 'responsive-loop-grid-rows' ) . '</strong><br />';
