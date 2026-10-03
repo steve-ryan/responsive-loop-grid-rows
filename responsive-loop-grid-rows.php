@@ -3,7 +3,7 @@
  * Plugin Name:       Responsive Loop Grid Rows
  * Plugin URI:        https://whatsapp.com/+254756949393
  * Description:       Adds a "Responsive Rows" control to Elementor Pro's Loop Grid widget, letting you set rows per breakpoint instead of manually calculating Items Per Page. True server-side responsive pagination, cache-safe by design.
- * Version:           1.0.2
+ * Version:           1.1.0
  * Requires at least: 6.0
  * Requires PHP:      8.1
  * Requires Plugins:  elementor
@@ -26,7 +26,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 // Constants.
 // -----------------------------------------------------------------------
 
-define( 'RLG_VERSION', '1.0.2' );
+define( 'RLG_VERSION', '1.1.0' );
 define( 'RLG_PLUGIN_FILE', __FILE__ );
 define( 'RLG_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'RLG_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
