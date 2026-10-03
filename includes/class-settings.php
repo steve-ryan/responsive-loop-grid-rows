@@ -134,9 +134,9 @@ class Settings {
 		$current = get_option( 'rlg_default_device', 'desktop' );
 		?>
 		<select id="rlg_default_device" name="rlg_default_device">
-			<option value="desktop" <?php selected( $current, 'desktop' ); ?>><?php esc_html_e( 'Desktop', 'responsive-loop-grid-rows' ); ?></option>
-			<option value="tablet" <?php selected( $current, 'tablet' ); ?>><?php esc_html_e( 'Tablet', 'responsive-loop-grid-rows' ); ?></option>
-			<option value="mobile" <?php selected( $current, 'mobile' ); ?>><?php esc_html_e( 'Mobile', 'responsive-loop-grid-rows' ); ?></option>
+			<?php foreach ( Responsive_Query::get_devices_display_order() as $device ) : ?>
+				<option value="<?php echo esc_attr( $device ); ?>" <?php selected( $current, $device ); ?>><?php echo esc_html( Responsive_Query::get_device_label( $device ) ); ?></option>
+			<?php endforeach; ?>
 		</select>
 		<p class="description">
 			<?php esc_html_e( 'This is the device used for every server-rendered page load - including the very first, uncached one and any full-page/CDN cached copy. It must be identical for every visitor, which is what makes caching safe. Visitors on a different breakpoint are corrected via one lightweight AJAX call (see "AJAX correction" below). Desktop is recommended for most sites.', 'responsive-loop-grid-rows' ); ?>
