@@ -48,6 +48,11 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 class Responsive_Query {
 
+	/**
+	 * The three core devices. The full, live list (which also includes any
+	 * extra breakpoints enabled in Elementor - Laptop, Tablet Extra, Mobile
+	 * Extra, Widescreen) comes from get_devices().
+	 */
 	public const DEVICES = array( 'mobile', 'tablet', 'desktop' );
 
 	/**
@@ -75,6 +80,14 @@ class Responsive_Query {
 	 * @var array<string, bool>
 	 */
 	private static array $registered_query_hooks = array();
+
+	/**
+	 * Per-request cache of get_breakpoints_config(). Only filled once
+	 * Elementor's breakpoint manager has actually been read.
+	 *
+	 * @var array<int, array{name: string, value: int, direction: string}>|null
+	 */
+	private static ?array $breakpoints_cache = null;
 
 	/**
 	 * Wire up the hooks that act on Loop Grid widgets.
@@ -120,7 +133,7 @@ class Responsive_Query {
 		}
 
 		$device = self::resolve_device( $settings );
-		$items  = self::calculate_items_for_device( $settings, $device );
+		$items  = self::calculate_items_for_render( $settings, $device );
 
 		$widget_id = (string) $widget->get_id();
 		$query_id  = ! empty( $settings['post_query_query_id'] ) ? (string) $settings['post_query_query_id'] : $widget_id;
@@ -135,6 +148,17 @@ class Responsive_Query {
 			$widget->add_render_attribute( '_wrapper', 'data-rlg-widget-id', $widget_id );
 			$widget->add_render_attribute( '_wrapper', 'data-rlg-query-id', $query_id );
 			$widget->add_render_attribute( '_wrapper', 'data-rlg-device', $device );
+
+			// Inside the editor the query returns the largest count, and
+			// assets/js/preview.js trims the grid to the device being
+			// previewed, using these per-device counts.
+			if ( self::is_editor_or_preview() ) {
+				$counts = array();
+				foreach ( self::get_devices() as $candidate ) {
+					$counts[ $candidate ] = self::calculate_items_for_device( $settings, $candidate );
+				}
+				$widget->add_render_attribute( '_wrapper', 'data-rlg-counts', wp_json_encode( $counts ) );
+			}
 
 			// Grids that use "Current Query" (archives) depend on the page's
 			// main query, which cannot be reproduced inside admin-ajax.php.
@@ -188,7 +212,7 @@ class Responsive_Query {
 			return $query_args;
 		}
 
-		$query_args['posts_per_page'] = self::calculate_items_for_device( $settings, self::resolve_device( $settings ) );
+		$query_args['posts_per_page'] = self::calculate_items_for_render( $settings, self::resolve_device( $settings ) );
 
 		return $query_args;
 	}
@@ -251,7 +275,7 @@ class Responsive_Query {
 	public static function get_fallback_device(): string {
 		$default = get_option( 'rlg_default_device', 'desktop' );
 
-		return in_array( $default, self::DEVICES, true ) ? $default : 'desktop';
+		return self::is_valid_device( $default ) ? $default : 'desktop';
 	}
 
 	/**
@@ -291,7 +315,7 @@ class Responsive_Query {
 
 		$raw = isset( $_COOKIE[ self::COOKIE_NAME ] ) ? sanitize_key( wp_unslash( $_COOKIE[ self::COOKIE_NAME ] ) ) : '';
 
-		return in_array( $raw, self::DEVICES, true ) ? $raw : null;
+		return self::is_valid_device( $raw ) ? $raw : null;
 	}
 
 	/**
@@ -325,7 +349,7 @@ class Responsive_Query {
 	 * @return string One of self::DEVICES.
 	 */
 	public static function resolve_device( array $settings = array() ): string {
-		if ( null !== self::$forced_device && in_array( self::$forced_device, self::DEVICES, true ) ) {
+		if ( null !== self::$forced_device && self::is_valid_device( self::$forced_device ) ) {
 			return self::$forced_device;
 		}
 
@@ -394,24 +418,47 @@ class Responsive_Query {
 	}
 
 	/**
+	 * Items to request for the current render.
+	 *
+	 * On the front end this is simply the calculated count for the resolved
+	 * device. Inside the Elementor editor/preview there is only one preview
+	 * query for all device modes, so it returns the LARGEST count across every
+	 * device; assets/js/preview.js then hides the surplus items for the device
+	 * mode being previewed. (Hiding can only remove items, so the query must
+	 * return at least as many as any device needs.)
+	 *
+	 * @param array<string, mixed> $settings Widget settings.
+	 * @param string               $device   The resolved device for this render.
+	 * @return int
+	 */
+	public static function calculate_items_for_render( array $settings, string $device ): int {
+		if ( null === self::$forced_device && self::is_editor_or_preview() ) {
+			$max = 1;
+			foreach ( self::get_devices() as $candidate ) {
+				$max = max( $max, self::calculate_items_for_device( $settings, $candidate ) );
+			}
+			return $max;
+		}
+
+		return self::calculate_items_for_device( $settings, $device );
+	}
+
+	/**
 	 * Calculate posts_per_page for a given device from a widget's settings
 	 * array, using the widget's *actual* responsive column settings (never
 	 * hard-coded) combined with the Responsive Rows control.
 	 *
-	 * Fallback chain per device, mirroring how Elementor's own responsive
-	 * controls cascade from desktop down to mobile when a breakpoint value
-	 * has not been explicitly set:
-	 *   desktop -> columns,        rlg_rows
-	 *   tablet  -> columns_tablet (falls back to columns),        rlg_rows_tablet (falls back to rlg_rows)
-	 *   mobile  -> columns_mobile (falls back to columns_tablet, then columns), rlg_rows_mobile (falls back to rlg_rows_tablet, then rlg_rows)
+	 * Each value cascades exactly as Elementor's own responsive controls do:
+	 * a device with no value of its own uses the next larger enabled
+	 * breakpoint, ending at desktop (see get_inheritance_chain()).
 	 *
 	 * @param array<string, mixed> $settings Widget settings_for_display().
-	 * @param string                $device   One of self::DEVICES.
+	 * @param string               $device   One of get_devices().
 	 * @return int
 	 */
 	public static function calculate_items_for_device( array $settings, string $device ): int {
-		$columns = self::resolve_columns( $settings, $device );
-		$rows    = self::resolve_rows( $settings, $device );
+		$columns = self::resolve_setting( $settings, 'columns', $device, 3 );
+		$rows    = self::resolve_setting( $settings, 'rlg_rows', $device, 2 );
 
 		$items = $columns * $rows;
 
@@ -429,117 +476,244 @@ class Responsive_Query {
 	}
 
 	/**
-	 * Resolve the effective column count for a device, using Elementor's
-	 * own cascading fallback (desktop -> tablet -> mobile).
+	 * Resolve a responsive control's effective positive-integer value for a
+	 * device, walking the inheritance chain until a usable value is found.
+	 * Empty, non-numeric and zero values count as "not set".
 	 *
 	 * @param array<string, mixed> $settings Widget settings.
-	 * @param string                $device   One of self::DEVICES.
+	 * @param string               $base     Base control name, e.g. "columns" or "rlg_rows".
+	 * @param string               $device   One of get_devices().
+	 * @param int                  $default  Used when nothing in the chain is set.
 	 * @return int
 	 */
-	private static function resolve_columns( array $settings, string $device ): int {
-		$desktop = self::to_positive_int( $settings['columns'] ?? null, 3 );
-		$tablet  = self::to_positive_int( $settings['columns_tablet'] ?? null, $desktop );
-		$mobile  = self::to_positive_int( $settings['columns_mobile'] ?? null, $tablet );
+	private static function resolve_setting( array $settings, string $base, string $device, int $default ): int {
+		foreach ( self::get_inheritance_chain( $device ) as $candidate ) {
+			$key = 'desktop' === $candidate ? $base : $base . '_' . $candidate;
+			$raw = $settings[ $key ] ?? null;
 
-		return match ( $device ) {
-			'mobile' => $mobile,
-			'tablet' => $tablet,
-			default  => $desktop,
-		};
+			if ( '' === $raw || null === $raw || false === $raw || is_array( $raw ) ) {
+				continue;
+			}
+
+			$int = (int) $raw;
+
+			if ( $int > 0 ) {
+				return $int;
+			}
+		}
+
+		return max( 1, $default );
 	}
 
 	/**
-	 * Resolve the effective Responsive Rows value for a device, using the
-	 * same cascading fallback pattern as Elementor's native responsive
-	 * controls (add_responsive_control on a control named "rlg_rows"
-	 * produces rlg_rows / rlg_rows_tablet / rlg_rows_mobile settings keys).
+	 * The order in which a device looks for a value: itself first, then each
+	 * next larger enabled breakpoint, then desktop. Mirrors how Elementor
+	 * cascades responsive controls (mobile -> mobile_extra -> tablet ->
+	 * tablet_extra -> laptop -> desktop). Widescreen is a min-width
+	 * breakpoint above desktop, so it falls straight back to desktop.
 	 *
-	 * @param array<string, mixed> $settings Widget settings.
-	 * @param string                $device   One of self::DEVICES.
-	 * @return int
+	 * @param string $device One of get_devices().
+	 * @return string[] Device names, starting with $device and ending with "desktop".
 	 */
-	private static function resolve_rows( array $settings, string $device ): int {
-		$desktop = self::to_positive_int( $settings['rlg_rows'] ?? null, 2 );
-		$tablet  = self::to_positive_int( $settings['rlg_rows_tablet'] ?? null, $desktop );
-		$mobile  = self::to_positive_int( $settings['rlg_rows_mobile'] ?? null, $tablet );
+	public static function get_inheritance_chain( string $device ): array {
+		if ( 'desktop' === $device ) {
+			return array( 'desktop' );
+		}
 
-		return match ( $device ) {
-			'mobile' => $mobile,
-			'tablet' => $tablet,
-			default  => $desktop,
-		};
+		$max_names = array();
+		$min_names = array();
+
+		foreach ( self::get_breakpoints_config() as $breakpoint ) {
+			if ( 'min' === $breakpoint['direction'] ) {
+				$min_names[] = $breakpoint['name'];
+			} else {
+				$max_names[] = $breakpoint['name'];
+			}
+		}
+
+		if ( in_array( $device, $min_names, true ) ) {
+			return array( $device, 'desktop' );
+		}
+
+		$index = array_search( $device, $max_names, true );
+
+		if ( false === $index ) {
+			return array( 'desktop' );
+		}
+
+		// $max_names is ordered smallest -> largest, so everything from the
+		// device's own position onwards is "itself, then larger".
+		$chain   = array_slice( $max_names, (int) $index );
+		$chain[] = 'desktop';
+
+		return $chain;
 	}
 
 	/**
-	 * Cast a raw, possibly-empty setting value to a positive integer,
-	 * falling back to a provided default when empty, non-numeric, or less
-	 * than 1 (handles "Rows = 0" and similar edge cases safely).
+	 * Every device name the plugin currently understands: each enabled
+	 * Elementor breakpoint plus "desktop".
 	 *
-	 * @param mixed $value   Raw value.
-	 * @param int   $default Fallback when value is missing/invalid.
-	 * @return int
+	 * @return string[]
 	 */
-	private static function to_positive_int( $value, int $default ): int {
-		if ( '' === $value || null === $value || false === $value ) {
-			return max( 1, $default );
+	public static function get_devices(): array {
+		$devices = array();
+
+		foreach ( self::get_breakpoints_config() as $breakpoint ) {
+			$devices[] = $breakpoint['name'];
 		}
 
-		$int = (int) $value;
+		$devices[] = 'desktop';
 
-		return $int > 0 ? $int : max( 1, $default );
+		return $devices;
 	}
 
 	/**
-	 * Get Elementor's actual configured breakpoint values (not hard-coded
-	 * 767/1024), for use both server-side (debug) and client-side (JS
-	 * localisation) so the plugin stays correct if a site customises its
-	 * breakpoints or enables additional ones (mobile extra, tablet extra,
-	 * laptop, widescreen).
+	 * Whether a value is a device name the plugin knows about right now.
 	 *
-	 * @return array<string, int> Map of breakpoint name => max-width value in px.
+	 * @param mixed $device Candidate value.
+	 * @return bool
 	 */
-	public static function get_breakpoint_values(): array {
-		$defaults = array(
-			'mobile' => 767,
-			'tablet' => 1024,
-		);
+	public static function is_valid_device( $device ): bool {
+		return is_string( $device ) && in_array( $device, self::get_devices(), true );
+	}
 
-		if ( ! class_exists( '\Elementor\Plugin' ) ) {
-			return $defaults;
+	/**
+	 * Elementor's enabled breakpoints, with their real widths and directions
+	 * (never hard-coded 767/1024), so the plugin stays correct when a site
+	 * customises its breakpoints or enables Laptop, Tablet Extra, Mobile
+	 * Extra or Widescreen.
+	 *
+	 * Ordered: max-width breakpoints from smallest to largest, then any
+	 * min-width breakpoint (Widescreen). "desktop" is the implicit default
+	 * and is not listed. "mobile" and "tablet" are always present.
+	 *
+	 * @return array<int, array{name: string, value: int, direction: string}>
+	 */
+	public static function get_breakpoints_config(): array {
+		if ( null !== self::$breakpoints_cache ) {
+			return self::$breakpoints_cache;
 		}
 
-		$elementor = \Elementor\Plugin::$instance;
+		$found  = array();
+		$loaded = false;
 
-		if ( ! isset( $elementor->breakpoints ) || ! method_exists( $elementor->breakpoints, 'get_breakpoints' ) ) {
-			return $defaults;
-		}
+		if ( class_exists( '\Elementor\Plugin' ) ) {
+			$elementor = \Elementor\Plugin::$instance;
 
-		try {
-			$breakpoints = $elementor->breakpoints->get_breakpoints();
-		} catch ( \Throwable $e ) {
-			Debug::log( 'breakpoints_error', array( 'message' => $e->getMessage() ) );
-			return $defaults;
-		}
+			if ( isset( $elementor->breakpoints ) && method_exists( $elementor->breakpoints, 'get_breakpoints' ) ) {
+				try {
+					foreach ( $elementor->breakpoints->get_breakpoints() as $name => $breakpoint ) {
+						if ( ! is_object( $breakpoint ) || ! method_exists( $breakpoint, 'get_value' ) || ! method_exists( $breakpoint, 'is_enabled' ) || ! $breakpoint->is_enabled() ) {
+							continue;
+						}
 
-		$values = array();
-		foreach ( $breakpoints as $name => $breakpoint ) {
-			if ( is_object( $breakpoint ) && method_exists( $breakpoint, 'get_value' ) && method_exists( $breakpoint, 'is_enabled' ) ) {
-				if ( $breakpoint->is_enabled() ) {
-					$values[ $name ] = (int) $breakpoint->get_value();
+						$direction = method_exists( $breakpoint, 'get_direction' ) ? (string) $breakpoint->get_direction() : 'max';
+						$key       = sanitize_key( (string) $name );
+
+						$found[ $key ] = array(
+							'name'      => $key,
+							'value'     => (int) $breakpoint->get_value(),
+							'direction' => 'min' === $direction ? 'min' : 'max',
+						);
+					}
+					$loaded = true;
+				} catch ( \Throwable $e ) {
+					Debug::log( 'breakpoints_error', array( 'message' => $e->getMessage() ) );
+					$found = array();
 				}
 			}
 		}
 
-		// Always guarantee mobile/tablet keys exist, since our device model
-		// (mobile/tablet/desktop) only needs those two thresholds even if
-		// the site has additional custom breakpoints active.
-		if ( ! isset( $values['mobile'] ) ) {
-			$values['mobile'] = $defaults['mobile'];
+		// Guarantee the two core breakpoints exist even if Elementor's
+		// breakpoint manager is unavailable.
+		if ( ! isset( $found['mobile'] ) ) {
+			$found['mobile'] = array(
+				'name'      => 'mobile',
+				'value'     => 767,
+				'direction' => 'max',
+			);
 		}
-		if ( ! isset( $values['tablet'] ) ) {
-			$values['tablet'] = $defaults['tablet'];
+		if ( ! isset( $found['tablet'] ) ) {
+			$found['tablet'] = array(
+				'name'      => 'tablet',
+				'value'     => 1024,
+				'direction' => 'max',
+			);
 		}
 
-		return $values;
+		$max = array();
+		$min = array();
+
+		foreach ( $found as $breakpoint ) {
+			if ( 'min' === $breakpoint['direction'] ) {
+				$min[] = $breakpoint;
+			} else {
+				$max[] = $breakpoint;
+			}
+		}
+
+		$by_value = static function ( array $a, array $b ): int {
+			return $a['value'] <=> $b['value'];
+		};
+		usort( $max, $by_value );
+		usort( $min, $by_value );
+
+		$config = array_merge( $max, $min );
+
+		// Only cache a result built from Elementor's real data; before
+		// Elementor has booted we return the safe defaults without caching.
+		if ( $loaded ) {
+			self::$breakpoints_cache = $config;
+		}
+
+		return $config;
+	}
+
+	/**
+	 * Forget the cached breakpoint list. Used by tests.
+	 */
+	public static function reset_breakpoints_cache(): void {
+		self::$breakpoints_cache = null;
+	}
+
+	/**
+	 * Devices in the order a person expects to see them listed: widescreen,
+	 * desktop, then the max-width breakpoints from largest to smallest.
+	 *
+	 * @return string[]
+	 */
+	public static function get_devices_display_order(): array {
+		$wide = array();
+		$max  = array();
+
+		foreach ( self::get_breakpoints_config() as $breakpoint ) {
+			if ( 'min' === $breakpoint['direction'] ) {
+				$wide[] = $breakpoint['name'];
+			} else {
+				$max[] = $breakpoint['name'];
+			}
+		}
+
+		return array_merge( array_reverse( $wide ), array( 'desktop' ), array_reverse( $max ) );
+	}
+
+	/**
+	 * Human-readable label for a device name, e.g. "tablet_extra" -> "Tablet Extra".
+	 *
+	 * @param string $device Device name.
+	 * @return string
+	 */
+	public static function get_device_label( string $device ): string {
+		$labels = array(
+			'desktop'      => __( 'Desktop', 'responsive-loop-grid-rows' ),
+			'laptop'       => __( 'Laptop', 'responsive-loop-grid-rows' ),
+			'tablet_extra' => __( 'Tablet Extra', 'responsive-loop-grid-rows' ),
+			'tablet'       => __( 'Tablet', 'responsive-loop-grid-rows' ),
+			'mobile_extra' => __( 'Mobile Extra', 'responsive-loop-grid-rows' ),
+			'mobile'       => __( 'Mobile', 'responsive-loop-grid-rows' ),
+			'widescreen'   => __( 'Widescreen', 'responsive-loop-grid-rows' ),
+		);
+
+		return $labels[ $device ] ?? ucwords( str_replace( '_', ' ', $device ) );
 	}
 }
