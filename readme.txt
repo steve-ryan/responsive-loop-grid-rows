@@ -5,7 +5,7 @@ Requires at least: 6.0
 Tested up to: 6.6
 Requires PHP: 8.1
 Requires Plugins: elementor
-Stable tag: 1.0.2
+Stable tag: 1.1.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -57,7 +57,7 @@ Change your columns later (say, Desktop to 4) and the item counts recalculate au
 3. Toggle **Enable Responsive Rows** to Yes.
 4. Set **Rows** for Desktop; switch to Tablet/Mobile preview in the top-left device switcher and set Rows for those breakpoints too (2/2/2 is a common starting point).
 5. The "Calculated items per page" box beneath the control shows the resulting `posts_per_page` for each breakpoint, live-updating as you change Columns/Rows (see "Editor mode" below for the exact limits of this live preview).
-6. You do **not** need to touch the widget's own "Items Per Page" field any more - it is ignored while Responsive Rows is enabled.
+6. You do **not** need to touch the widget's own "Items Per Page" field any more - it is hidden and ignored while Responsive Rows is enabled.
 7. Save/update the page.
 
 For the Loop Grid described in this plugin's design brief (5/3/2 columns, `sale_products` Query ID, Load More pagination), simply turn on Responsive Rows and set Rows to 2/2/2 to get 10/6/4 items per page - no other settings need to change.
@@ -66,8 +66,9 @@ For the Loop Grid described in this plugin's design brief (5/3/2 columns, `sale_
 
 For each breakpoint, `posts_per_page = columns x rows`, where:
 
-* `columns` is read live from the widget's *own* Columns / Columns Tablet / Columns Mobile controls - never hard-coded. Change your columns later and the totals update automatically.
+* `columns` is read live from the widget's *own* Columns controls for each breakpoint - never hard-coded. Change your columns later and the totals update automatically.
 * `rows` is read from this plugin's Responsive Rows control, with the same "falls back to the next larger breakpoint if unset" behaviour Elementor itself uses for every responsive control (e.g. if Mobile Rows is left empty, it uses the Tablet value; if that's also empty, it uses Desktop).
+* **Every breakpoint you have enabled in Elementor is supported**: Mobile, Mobile Extra, Tablet, Tablet Extra, Laptop, Desktop and Widescreen. A breakpoint with no value of its own uses the next larger enabled one, ending at Desktop (Widescreen uses Desktop).
 
 == Pagination behaviour ==
 
@@ -78,7 +79,7 @@ Because the plugin only ever changes `posts_per_page` on the real query - via El
 * **Elementor's AJAX pagination**: also goes through the same query hook, so it stays correct.
 * No duplicate or skipped products when navigating between pages within a single breakpoint.
 
-Note: if a visitor actively resizes their browser across a breakpoint *while already viewing page 2+*, "page 2" now represents a different offset for the new breakpoint (this is inherent to any columns/rows-based responsive pagination system, not specific to this plugin). The plugin does not automatically reload content on every resize/orientation-change event, to avoid surprising jumps during ordinary window resizing; a fresh page load or pagination click is always authoritative for whatever breakpoint is active at that moment.
+Note: if a visitor actively resizes their browser across a breakpoint *while already viewing page 2+*, "page 2" now represents a different offset for the new breakpoint (this is inherent to any columns/rows-based responsive pagination system, not specific to this plugin). Since 1.1.0 a grid follows the visitor across breakpoints without a reload (resize or rotate, debounced). This is skipped while the URL carries an `e-page-` argument (the visitor is on page 2 or later), so their place in the list never jumps; a fresh page load or pagination click is authoritative there.
 
 == Caching strategy ==
 
@@ -110,7 +111,9 @@ Category/tag/attribute/brand filters, price filters, search, and WooCommerce tax
 
 == Editor mode ==
 
-The Elementor editor always renders the live preview canvas using the Desktop configuration, regardless of which responsive preview mode (Desktop/Tablet/Mobile) you have selected in the panel. Elementor's device switcher changes CSS/layout preview, not which server-side query result is loaded, and simulating a true separate query per device inside the editor's single preview iframe is not practical without much deeper integration. To verify your Tablet/Mobile numbers, use the **Calculated items per page** box under the Responsive Rows control - it live-updates as you change Columns/Rows (best-effort; see the code comments in `assets/js/editor.js` for the exact mechanism and its limits). The real, correct per-breakpoint behaviour applies on the actual front end.
+The editor preview runs a single query for all device modes, so it loads the LARGEST item count across your breakpoints and `assets/js/preview.js` then shows only as many items as the device you are previewing needs. Switching to Tablet or Mobile in Elementor's device switcher therefore shows the right number of items. This works with the default Loop Grid item markup (`.e-loop-item`); if a future Elementor Pro renames that class the preview simply shows the full list.
+
+The **Calculated items per page** box under the Responsive Rows control shows the numbers for every enabled breakpoint and updates as you change Columns/Rows. The real, correct per-breakpoint behaviour always applies on the actual front end.
 
 == Debugging ==
 
@@ -122,11 +125,9 @@ When enabled: safe, non-sensitive data (widget ID, resolved breakpoint, columns,
 
 == Known limitations ==
 
-* The Elementor editor's live preview canvas always simulates the Desktop breakpoint (see "Editor mode" above).
-* A visitor who resizes their browser across a breakpoint while already deep in pagination will see the new breakpoint's item count apply starting from a fresh page load or pagination click, not instantly mid-scroll (see "Pagination behaviour" above).
+* A visitor who resizes their browser across a breakpoint while already deep in pagination (page 2 or later) will see the new breakpoint's item count apply starting from a fresh page load or pagination click, not instantly mid-scroll (see "Pagination behaviour" above).
 * Filtering plugins that bypass Elementor's own query/render pipeline entirely are not affected by Responsive Rows (see "Filters compatibility").
 * Loop Grids whose Query source is **Current Query** (archive/category templates) always use the fallback device's item count. Their query depends on the page's main query, which cannot be reproduced inside `admin-ajax.php`, so they are intentionally not corrected (showing the wrong products would be worse than showing the fallback count).
-* The device model is Desktop / Tablet / Mobile. If you enable Elementor's additional breakpoints (Laptop, Tablet Extra, Mobile Extra, Widescreen), Responsive Rows only distinguishes the Mobile and Tablet breakpoints; the other breakpoints use the nearest of those three.
 * This plugin relies on `Elementor\Core\Base\Document::render_element()`, a documented-in-practice but not formally versioned Elementor Pro/Core method used internally for single-widget AJAX re-rendering. The plugin checks for its existence at runtime and fails gracefully (falling back to the site-wide fallback device for all visitors, with a debug log entry) if a future Elementor update removes or renames it.
 
 == How to disable the feature ==
@@ -158,6 +159,17 @@ This version targets the Loop Grid widget specifically (widget name `loop-grid`)
 The plugin sets one functional cookie, `rlg_device` (value: `mobile`, `tablet` or `desktop`; 24 hours), solely so that paginated Loop Grid requests return the right number of items for the visitor's screen size. It contains no personal data and is not used for tracking. Suggested wording is added to Settings -> Privacy -> Policy Guide. No data is sent to any third party.
 
 == Changelog ==
+
+= 1.1.0 =
+* New: all of Elementor's breakpoints are supported (Mobile Extra, Tablet Extra, Laptop, Widescreen), using the real enabled breakpoints and Elementor's own cascade. Previously only Mobile / Tablet / Desktop were understood, so a Laptop or Tablet Extra visitor got the wrong number of items.
+* New: the grid now follows the visitor when the window is resized or the device rotated (debounced; skipped on page 2+).
+* New: the widget's own "Items Per Page" field is hidden while Responsive Rows is on, since its value is ignored.
+* New: the Elementor editor preview now shows the right item count when you switch the device mode (Desktop / Tablet / Mobile / extra breakpoints).
+* New: the "Calculated items per page" box lists every enabled breakpoint and now reads values from the widget's settings (more reliable than reading inputs).
+* New: the fallback device setting offers every enabled breakpoint.
+* Fix: filtered URLs re-rendered incorrectly. The AJAX re-render now forwards up to 40 parameters, values up to 200 characters, and flat array parameters such as `brand[]=a&brand[]=b`, and spaces/accents in search terms (values are sanitised, anything unsafe is dropped whole instead of being half-applied).
+* Fix: pages cached by an older version keep working with the new script.
+* Tests: added unit tests (`vendor/bin/phpunit`, or `php tests/run.php` without PHPUnit).
 
 = 1.0.2 =
 * Fix: the AJAX correction returned an empty response because `Document::render_element()` returns its markup instead of printing it; the returned value is now used (printed output is kept only as a fallback).
