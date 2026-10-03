@@ -35,25 +35,41 @@ class Pagination {
 	 * beyond anything a normal pagination URL would need; exists purely as
 	 * a defensive cap.
 	 */
-	private const MAX_FORWARDED_PARAMS = 15;
+	private const MAX_FORWARDED_PARAMS = 40;
+
+	/**
+	 * Longest accepted value for a single forwarded parameter, and the most
+	 * items accepted in an array parameter such as `filter[]=a&filter[]=b`.
+	 */
+	private const MAX_VALUE_LENGTH = 200;
+	private const MAX_ARRAY_ITEMS  = 25;
+
+	/**
+	 * Longest raw query string accepted at all.
+	 */
+	private const MAX_QUERY_LENGTH = 4000;
 
 	/**
 	 * Parse a raw, user-supplied query string (e.g. from
-	 * window.location.search) and return only the subset of parameters
-	 * that look like simple pagination/filter values: alphanumeric,
-	 * underscore or hyphen keys, and short scalar values. Everything else
-	 * (arrays, deeply nested params, anything containing suspicious
-	 * characters) is dropped rather than sanitized-and-kept, since we only
-	 * need this for benign query vars like `paged`, `e-page-<id>`, or
-	 * WooCommerce filter params - never for arbitrary input.
+	 * window.location.search) and return only the parameters that are safe
+	 * to expose to the widget's own query while it re-renders.
 	 *
-	 * @param string $raw_query_string Raw query string, without a leading "?".
-	 * @return array<string, string>
+	 * Kept: simple keys (letters, digits, underscore, hyphen) whose value is
+	 * a short string, or a flat list of short strings (so `?brand[]=a&brand[]=b`
+	 * and `?s=blue+shirt` style filters survive). Each string is passed
+	 * through sanitize_text_field(), which strips tags and control characters.
+	 *
+	 * Dropped: anything nested deeper than one level, keys with other
+	 * characters, and values over the length limits. Dropped rather than
+	 * truncated, because a half-applied filter would show wrong results.
+	 *
+	 * @param string $raw_query_string Raw query string, with or without a leading "?".
+	 * @return array<string, string|string[]>
 	 */
 	public static function extract_safe_query_vars( string $raw_query_string ): array {
 		$raw_query_string = ltrim( $raw_query_string, '?' );
 
-		if ( '' === $raw_query_string || strlen( $raw_query_string ) > 2000 ) {
+		if ( '' === $raw_query_string || strlen( $raw_query_string ) > self::MAX_QUERY_LENGTH ) {
 			return array();
 		}
 
@@ -68,25 +84,88 @@ class Pagination {
 				break;
 			}
 
-			if ( ! is_string( $key ) || ! is_scalar( $value ) ) {
-				continue;
-			}
+			$key = (string) $key;
 
 			if ( ! preg_match( '/^[a-zA-Z0-9_\-]+$/', $key ) ) {
 				continue;
 			}
 
-			$value = (string) $value;
+			if ( is_array( $value ) ) {
+				$clean = self::clean_list( $value );
 
-			if ( strlen( $value ) > 100 || ! preg_match( '/^[a-zA-Z0-9_\-,.]*$/', $value ) ) {
+				if ( null === $clean ) {
+					continue;
+				}
+
+				$safe[ $key ] = $clean;
+				++$count;
 				continue;
 			}
 
-			$safe[ $key ] = $value;
+			$clean = self::clean_value( $value );
+
+			if ( null === $clean ) {
+				continue;
+			}
+
+			$safe[ $key ] = $clean;
 			++$count;
 		}
 
 		return $safe;
+	}
+
+	/**
+	 * Sanitise one scalar value; null means "reject".
+	 *
+	 * @param mixed $value Raw parsed value.
+	 * @return string|null
+	 */
+	private static function clean_value( $value ): ?string {
+		if ( ! is_scalar( $value ) ) {
+			return null;
+		}
+
+		$value = (string) $value;
+
+		if ( strlen( $value ) > self::MAX_VALUE_LENGTH ) {
+			return null;
+		}
+
+		return sanitize_text_field( $value );
+	}
+
+	/**
+	 * Sanitise a flat list of scalars; null means "reject the whole list".
+	 *
+	 * @param array<mixed> $values Raw parsed array.
+	 * @return string[]|null
+	 */
+	private static function clean_list( array $values ): ?array {
+		if ( count( $values ) > self::MAX_ARRAY_ITEMS ) {
+			return null;
+		}
+
+		$clean = array();
+
+		foreach ( $values as $item_key => $item ) {
+			$item = self::clean_value( $item );
+
+			if ( null === $item ) {
+				return null;
+			}
+
+			// Keep numeric keys (`a[]=x`) as a list, and simple named keys.
+			if ( is_int( $item_key ) ) {
+				$clean[] = $item;
+			} elseif ( preg_match( '/^[a-zA-Z0-9_\-]+$/', (string) $item_key ) ) {
+				$clean[ (string) $item_key ] = $item;
+			} else {
+				return null;
+			}
+		}
+
+		return $clean;
 	}
 
 	/**
@@ -98,7 +177,7 @@ class Pagination {
 	 * out-of-band AJAX re-render as it would on a normal page load with
 	 * that query string.
 	 *
-	 * @param array<string, string> $safe_query_vars Sanitised key => value pairs.
+	 * @param array<string, string|string[]> $safe_query_vars Sanitised key => value pairs.
 	 * @param callable               $callback        Callback to run with $_GET temporarily augmented.
 	 * @return mixed Whatever $callback returns.
 	 */
@@ -155,12 +234,12 @@ class Pagination {
 	 * Validate a device string against the known whitelist.
 	 *
 	 * @param mixed $device Raw, untrusted value.
-	 * @return string One of Responsive_Query::DEVICES, defaulting to 'desktop'.
+	 * @return string One of Responsive_Query::get_devices(), defaulting to 'desktop'.
 	 */
 	public static function sanitize_device( $device ): string {
 		$device = is_string( $device ) ? strtolower( trim( $device ) ) : '';
 
-		return in_array( $device, Responsive_Query::DEVICES, true ) ? $device : 'desktop';
+		return Responsive_Query::is_valid_device( $device ) ? $device : 'desktop';
 	}
 
 	/**
