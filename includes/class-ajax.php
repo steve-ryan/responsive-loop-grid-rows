@@ -55,7 +55,8 @@ class Ajax {
 	 * Expected POST parameters:
 	 * - document_id  (required) Elementor document id containing the widget.
 	 * - widget_id    (required) Elementor element id of the Loop Grid.
-	 * - device       (required) one of mobile|tablet|desktop.
+	 * - device       (required) one of the site's enabled devices (mobile, tablet,
+	 *                desktop, plus any extra Elementor breakpoints).
 	 * - post_id      (optional) the singular post being viewed, so a widget
 	 *                inside a Theme Builder template renders in that context.
 	 * - query_string (optional) the visitor's current location.search, used
@@ -175,8 +176,8 @@ class Ajax {
 	 *
 	 * @param object               $document       Elementor document containing the widget.
 	 * @param array<string, mixed> $widget_element Raw element data for the widget.
-	 * @param string               $device         One of Responsive_Query::DEVICES.
-	 * @param array<string, string> $query_vars    Sanitised query vars to expose via $_GET during the render.
+	 * @param string               $device         One of Responsive_Query::get_devices().
+	 * @param array<string, string|string[]> $query_vars Sanitised query vars to expose via $_GET during the render.
 	 * @param int                  $context_post_id Singular post to render in the context of, or 0.
 	 * @return string Rendered HTML (may be empty on failure).
 	 *
