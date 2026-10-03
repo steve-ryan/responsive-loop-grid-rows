@@ -131,6 +131,7 @@ final class Plugin {
 
 		add_action( 'wp_enqueue_scripts', array( $this, 'enqueue_frontend_assets' ) );
 		add_action( 'elementor/editor/after_enqueue_scripts', array( $this, 'enqueue_editor_assets' ) );
+		add_action( 'elementor/preview/enqueue_scripts', array( $this, 'enqueue_preview_assets' ) );
 		add_action( 'wp_footer', array( 'RLG\\Debug', 'maybe_print_footer_comment' ), 999 );
 		add_action( 'admin_init', array( $this, 'add_privacy_policy_content' ) );
 
@@ -183,7 +184,7 @@ final class Plugin {
 
 		$data = array(
 			'ajaxUrl'        => admin_url( 'admin-ajax.php' ),
-			'breakpoints'    => Responsive_Query::get_breakpoint_values(),
+			'breakpoints'    => Responsive_Query::get_breakpoints_config(),
 			'fallbackDevice' => Responsive_Query::get_fallback_device(),
 			'correctionMode' => $mode,
 			'debug'          => (bool) RLG_DEBUG,
@@ -200,14 +201,52 @@ final class Plugin {
 	}
 
 	/**
-	 * Enqueue the small editor-only helper script that live-updates the
-	 * "Calculated" helper text in the panel when columns/rows change.
+	 * Enqueue the editor-panel helper script that live-updates the
+	 * "Calculated" helper text and hides the native Items Per Page field
+	 * while Responsive Rows is on.
 	 */
 	public function enqueue_editor_assets(): void {
 		wp_enqueue_script(
 			'rlg-editor',
 			RLG_PLUGIN_URL . 'assets/js/editor.js',
 			array( 'jquery' ),
+			RLG_VERSION,
+			true
+		);
+
+		$chains = array();
+		foreach ( Responsive_Query::get_devices() as $device ) {
+			$chains[ $device ] = Responsive_Query::get_inheritance_chain( $device );
+		}
+
+		$labels = array();
+		foreach ( Responsive_Query::get_devices() as $device ) {
+			$labels[ $device ] = Responsive_Query::get_device_label( $device );
+		}
+
+		wp_add_inline_script(
+			'rlg-editor',
+			'window.RLG_Editor = ' . wp_json_encode(
+				array(
+					'order'  => Responsive_Query::get_devices_display_order(),
+					'chains' => $chains,
+					'labels' => $labels,
+				),
+				JSON_HEX_TAG | JSON_HEX_AMP
+			) . ';',
+			'before'
+		);
+	}
+
+	/**
+	 * Enqueue the script that, inside the Elementor preview canvas, trims a
+	 * Responsive Rows grid down to the device currently being previewed.
+	 */
+	public function enqueue_preview_assets(): void {
+		wp_enqueue_script(
+			'rlg-preview',
+			RLG_PLUGIN_URL . 'assets/js/preview.js',
+			array( 'elementor-frontend' ),
 			RLG_VERSION,
 			true
 		);
